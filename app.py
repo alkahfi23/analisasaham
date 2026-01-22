@@ -8,7 +8,7 @@ from datetime import datetime, timezone, timedelta
 # =====================================================
 # STREAMLIT
 # =====================================================
-st.set_page_config("IDX PRO Scanner — FULL SUITE", layout="wide")
+st.set_page_config("IDX PRO Scanner — FULL SUITE (FIXED)", layout="wide")
 st.title("🚀 IDX PRO Scanner — Yahoo Finance (FULL SUITE)")
 
 DEBUG = st.sidebar.toggle("🧪 Debug Mode", value=False)
@@ -52,7 +52,8 @@ MIN_RISK_PCT = 0.01
 # =====================================================
 if not os.path.exists(SIGNAL_FILE):
     pd.DataFrame(columns=[
-        "Time","Symbol","Score","Entry","SL","TP1","TP2","R"
+        "Time","Symbol","Score",
+        "Entry","SL","TP1","TP2","R"
     ]).to_csv(SIGNAL_FILE, index=False)
 
 # =====================================================
@@ -69,7 +70,7 @@ if uploaded_file is None:
     st.stop()
 
 # =====================================================
-# LOAD SYMBOLS
+# LOAD SYMBOLS (CACHE AMAN)
 # =====================================================
 @st.cache_data(ttl=3600)
 def load_idx_symbols_from_excel(file):
@@ -84,21 +85,23 @@ def load_idx_symbols_from_excel(file):
     return [s + ".JK" for s in syms if len(s) >= 3]
 
 # =====================================================
-# FILTER VOLUME
+# FILTER VOLUME (❌ NO CACHE — FIX UTAMA)
 # =====================================================
-@st.cache_data(ttl=1800)
 def filter_by_volume(symbols):
     liquid = []
     for s in symbols:
         try:
-            df = yf.download(s, period="10d", interval="1d", progress=False)
-            if df.empty: continue
+            df = yf.download(
+                s, period="10d", interval="1d", progress=False
+            )
+            if df.empty or "Volume" not in df.columns:
+                continue
             avg_vol = df["Volume"].tail(5).mean()
             if avg_vol >= MIN_AVG_VOLUME:
                 liquid.append(s)
-            time.sleep(0.1)
+            time.sleep(0.1)  # anti Yahoo ban
         except:
-            pass
+            continue
     return liquid
 
 # =====================================================
@@ -120,12 +123,13 @@ def supertrend(df, period, mult):
     tr = np.maximum.reduce([
         h-l, np.abs(h-np.roll(c,1)), np.abs(l-np.roll(c,1))
     ])
-    tr[0]=h[0]-l[0]
+    tr[0] = h[0]-l[0]
     atr = pd.Series(tr).ewm(span=period).mean().values
-    hl2=(h+l)/2
-    upper=hl2+mult*atr
-    lower=hl2-mult*atr
-    trend=1; st_line=lower[0]
+    hl2 = (h+l)/2
+    upper = hl2 + mult*atr
+    lower = hl2 - mult*atr
+    trend = 1
+    st_line = lower[0]
     for i in range(1,len(c)):
         if trend==1:
             st_line=max(lower[i],st_line)
@@ -139,7 +143,7 @@ def volume_osc(v,f,s):
     return (v.ewm(span=f).mean()-v.ewm(span=s).mean())/v.ewm(span=s).mean()*100
 
 def accumulation_distribution(df):
-    h,l,c,v=df.high,df.low,df.close,df.volume
+    h,l,c,v = df.high,df.low,df.close,df.volume
     mfm=((c-l)-(h-c))/(h-l)
     mfm=mfm.replace([np.inf,-np.inf],0).fillna(0)
     return (mfm*v).cumsum()
@@ -152,7 +156,7 @@ def find_support(df,lb):
     return lv
 
 # =====================================================
-# SCORE
+# SCORE & TRADE
 # =====================================================
 def calculate_score(df1h,df1d):
     score=0
@@ -233,11 +237,12 @@ with tab1:
                 })
 
             except Exception as e:
-                if DEBUG: st.write(s,e)
+                if DEBUG:
+                    st.write(s,e)
 
         if found:
             df=pd.DataFrame(found).sort_values("Score",ascending=False)
-            st.success(f"🔥 {len(df)} SIGNAL")
+            st.success(f"🔥 {len(df)} SIGNAL AKUMULASI_KUAT")
             st.dataframe(df,use_container_width=True)
 
             hist=pd.read_csv(SIGNAL_FILE)
@@ -253,7 +258,10 @@ with tab1:
 # =====================================================
 with tab2:
     hist=pd.read_csv(SIGNAL_FILE)
-    st.dataframe(hist.sort_values("Time",ascending=False),use_container_width=True)
+    st.dataframe(
+        hist.sort_values("Time",ascending=False),
+        use_container_width=True
+    )
 
 # =====================================================
 # TAB 3 — MONTE CARLO
