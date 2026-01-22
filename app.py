@@ -2,41 +2,47 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import yfinance as yf
-import time
-from datetime import datetime, time as dtime, timezone, timedelta
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import time, os
+from datetime import datetime, time as dtime, timezone, timedelta
 
 # =====================================================
 # STREAMLIT
 # =====================================================
-st.set_page_config("IDX PRO Scanner (Yahoo)", layout="wide")
-st.title("📈 IDX PRO Scanner — Yahoo Finance (FINAL STABLE)")
+st.set_page_config("IDX PRO Scanner — FINAL", layout="wide")
+st.title("📈 IDX PRO Scanner — Yahoo Finance (ALL IDX STOCKS)")
+
+# =====================================================
+# PATH
+# =====================================================
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+EXCEL_PATH = os.path.join(BASE_DIR, "Stock List - Main - 20260122.xlsx")
+SIGNAL_FILE = os.path.join(BASE_DIR, "signal_history.csv")
+TRADE_FILE = os.path.join(BASE_DIR, "trade_results.csv")
 
 # =====================================================
 # TIMEZONE
 # =====================================================
 WIB = timezone(timedelta(hours=7))
-
 def now_wib():
     return datetime.now(WIB).strftime("%Y-%m-%d %H:%M WIB")
 
 # =====================================================
 # CONFIG
 # =====================================================
-IDX_SYMBOLS = ["BBRI.JK","BMRI.JK","BBCA.JK","TLKM.JK","ASII.JK"]
-
 ENTRY_INTERVAL = "1h"
 DAILY_INTERVAL = "1d"
 LOOKBACK_1H = "6mo"
 LOOKBACK_1D = "3y"
+
+MIN_VOLUME = 1_000_000
 
 ATR_PERIOD = 10
 MULTIPLIER = 3.0
 
 VO_FAST = 14
 VO_SLOW = 28
-VO_MIN = 5
 
 SR_LOOKBACK = 5
 ZONE_BUFFER = 0.01
@@ -47,6 +53,22 @@ MIN_RISK_PCT = 0.01
 
 RETEST_TOL = 0.005
 TP_EXTEND = 0.9
+
+# =====================================================
+# INIT FILES
+# =====================================================
+def init_files():
+    if not os.path.exists(SIGNAL_FILE):
+        pd.DataFrame(columns=[
+            "Time","Symbol","Phase","Score","Rating",
+            "Entry","SL","TP1","TP2",
+            "Status","Label"
+        ]).to_csv(SIGNAL_FILE,index=False)
+
+    if not os.path.exists(TRADE_FILE):
+        pd.DataFrame(columns=["Time","Symbol","R"]).to_csv(TRADE_FILE,index=False)
+
+init_files()
 
 # =====================================================
 # MARKET HOURS IDX
@@ -62,6 +84,46 @@ def is_market_open():
     )
 
 # =====================================================
+# LOAD IDX SYMBOLS FROM EXCEL
+# =====================================================
+@st.cache_data(ttl=3600)
+def load_idx_symbols_from_excel(path):
+    df = pd.read_excel(path)
+
+    possible_cols = ["Kode Saham","Kode","Ticker","Symbol"]
+    col = next(c for c in possible_cols if c in df.columns)
+
+    symbols = (
+        df[col]
+        .astype(str)
+        .str.upper()
+        .str.strip()
+        .unique()
+        .tolist()
+    )
+
+    return [s + ".JK" for s in symbols if s.isalnum()]
+
+# =====================================================
+# FILTER BY VOLUME
+# =====================================================
+@st.cache_data(ttl=1800)
+def filter_by_volume(symbols, min_volume):
+    liquid = []
+    for s in symbols:
+        try:
+            df = yf.download(s, period="5d", interval="1d", progress=False)
+            if df.empty:
+                continue
+            vol = df["Volume"].iloc[-1]
+            if vol >= min_volume:
+                liquid.append(s)
+            time.sleep(0.15)
+        except:
+            continue
+    return liquid
+
+# =====================================================
 # YAHOO DATA (SAFE)
 # =====================================================
 @st.cache_data(ttl=300)
@@ -71,21 +133,17 @@ def fetch_ohlcv(symbol, interval, period):
         interval=interval,
         period=period,
         group_by="column",
-        auto_adjust=False,
         progress=False
     )
-
     if df.empty:
         raise RuntimeError("No data")
 
-    # flatten column
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = [c[0].lower() for c in df.columns]
     else:
         df.columns = [c.lower() for c in df.columns]
 
     df = df[["open","high","low","close","volume"]].dropna()
-
     for c in df.columns:
         df[c] = pd.to_numeric(df[c], errors="coerce")
 
@@ -95,37 +153,33 @@ def fetch_ohlcv(symbol, interval, period):
 # INDICATORS (NUMPY SAFE)
 # =====================================================
 def supertrend(df, period, mult):
-    high = df["high"].values
-    low = df["low"].values
-    close = df["close"].values
+    h = df.high.values
+    l = df.low.values
+    c = df.close.values
 
     tr = np.maximum.reduce([
-        high - low,
-        np.abs(high - np.roll(close, 1)),
-        np.abs(low - np.roll(close, 1))
+        h-l, np.abs(h-np.roll(c,1)), np.abs(l-np.roll(c,1))
     ])
-    tr[0] = high[0] - low[0]
+    tr[0] = h[0]-l[0]
 
-    atr = pd.Series(tr).ewm(span=period, adjust=False).mean().values
-    hl2 = (high + low) / 2
-
-    upper = hl2 + mult * atr
-    lower = hl2 - mult * atr
+    atr = pd.Series(tr).ewm(span=period,adjust=False).mean().values
+    hl2 = (h+l)/2
+    upper = hl2 + mult*atr
+    lower = hl2 - mult*atr
 
     stl = np.zeros(len(df))
     trend = np.ones(len(df))
-
     stl[0] = lower[0]
 
-    for i in range(1, len(df)):
+    for i in range(1,len(df)):
         if trend[i-1] == 1:
             stl[i] = max(lower[i], stl[i-1])
-            trend[i] = 1 if close[i] > stl[i] else -1
+            trend[i] = 1 if c[i] > stl[i] else -1
         else:
             stl[i] = min(upper[i], stl[i-1])
-            trend[i] = -1 if close[i] < stl[i] else 1
+            trend[i] = -1 if c[i] < stl[i] else 1
 
-    return pd.Series(stl, index=df.index), pd.Series(trend, index=df.index)
+    return pd.Series(stl, df.index), pd.Series(trend, df.index)
 
 def volume_osc(v,f,s):
     return (v.ewm(span=f).mean() - v.ewm(span=s).mean()) / v.ewm(span=s).mean() * 100
@@ -137,13 +191,13 @@ def accumulation_distribution(df):
     return (mfm*v).cumsum()
 
 def find_support(df,lb):
-    levels=[]
+    lv=[]
     for i in range(lb,len(df)-lb):
-        if df.low.iloc[i]==min(df.low.iloc[i-lb:i+lb+1]):
-            levels.append(df.low.iloc[i])
+        if df.low.iloc[i] == min(df.low.iloc[i-lb:i+lb+1]):
+            lv.append(df.low.iloc[i])
     clean=[]
-    for s in sorted(levels):
-        if not clean or abs(s-clean[-1])/clean[-1]>0.02:
+    for s in sorted(lv):
+        if not clean or abs(s-clean[-1])/clean[-1] > 0.02:
             clean.append(s)
     return clean
 
@@ -156,12 +210,12 @@ def calculate_score(df1h, df1d):
     ema50 = df1h.close.ewm(span=50).mean()
     ema200 = df1d.close.ewm(span=200).mean()
 
-    price = df1h.close.iloc[-1]
+    p = df1h.close.iloc[-1]
 
-    if price > ema20.iloc[-1]: score+=1
+    if p > ema20.iloc[-1]: score+=1
     if ema20.iloc[-1] > ema50.iloc[-1]: score+=1
     if ema50.iloc[-1] > ema200.iloc[-1]: score+=1
-    if price > ema200.iloc[-1]: score+=1
+    if p > ema200.iloc[-1]: score+=1
 
     vo = volume_osc(df1h.volume, VO_FAST, VO_SLOW).iloc[-1]
     if vo > 5: score+=1
@@ -177,15 +231,13 @@ def calculate_score(df1h, df1d):
 
 def trade_levels(df1d):
     entry = df1d.close.iloc[-1]
-    supports = [s for s in find_support(df1d, SR_LOOKBACK) if s < entry]
-    if not supports:
+    sup = [s for s in find_support(df1d, SR_LOOKBACK) if s < entry]
+    if not sup:
         return None
-
-    sl = max(supports) * (1-ZONE_BUFFER)
+    sl = max(sup) * (1-ZONE_BUFFER)
     risk = entry - sl
     if risk < entry * MIN_RISK_PCT:
         return None
-
     return {
         "Entry": round(entry,2),
         "SL": round(sl,2),
@@ -203,72 +255,130 @@ def auto_label(sig, price):
     return ""
 
 # =====================================================
-# CHART
+# HISTORY & TRADE RESULT
 # =====================================================
-def render_chart(df, stl, adl, sig):
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7,0.3])
-    fig.add_candlestick(
-        x=df.index, open=df.open, high=df.high,
-        low=df.low, close=df.close, row=1,col=1
-    )
-    fig.add_trace(go.Scatter(x=df.index,y=stl,line=dict(color="lime")),row=1,col=1)
-    for k,c in [("Entry","cyan"),("SL","red"),("TP1","orange"),("TP2","purple")]:
-        fig.add_hline(y=sig[k],line_color=c,row=1)
-    fig.add_trace(go.Scatter(x=df.index,y=adl,line=dict(color="cyan")),row=2,col=1)
-    fig.update_layout(template="plotly_dark",height=520,xaxis_rangeslider_visible=False)
-    return fig
+def save_signal(sig):
+    df = pd.read_csv(SIGNAL_FILE)
+    if ((df.Symbol==sig["Symbol"]) & (df.Status=="OPEN")).any():
+        return
+    df = pd.concat([df, pd.DataFrame([sig])], ignore_index=True)
+    df.to_csv(SIGNAL_FILE, index=False)
+
+def update_trade_outcome():
+    df = pd.read_csv(SIGNAL_FILE)
+    res = pd.read_csv(TRADE_FILE)
+
+    for i,r in df.iterrows():
+        if r.Status != "OPEN":
+            continue
+        try:
+            price = fetch_ohlcv(r.Symbol, ENTRY_INTERVAL, "5d").close.iloc[-1]
+        except:
+            continue
+
+        R=None; status=None
+        if price <= r.SL:
+            R=-1; status="SL HIT"
+        elif price >= r.TP2:
+            R=TP2_R; status="TP2 HIT"
+        elif price >= r.TP1:
+            R=TP1_R; status="TP1 HIT"
+
+        if R is not None:
+            df.at[i,"Status"] = status
+            res = pd.concat([res, pd.DataFrame([{
+                "Time": now_wib(),
+                "Symbol": r.Symbol,
+                "R": R
+            }])], ignore_index=True)
+
+    df.to_csv(SIGNAL_FILE,index=False)
+    res.to_csv(TRADE_FILE,index=False)
+
+# =====================================================
+# MONTE CARLO
+# =====================================================
+def monte_carlo(r, initial, risk, trades, sims):
+    curves=[]
+    for _ in range(sims):
+        bal=initial
+        eq=[bal]
+        for _ in range(trades):
+            bal += bal * risk
+            bal += bal * risk * np.random.choice(r)
+            eq.append(bal)
+        curves.append(eq)
+    return np.array(curves)
 
 # =====================================================
 # UI
 # =====================================================
-if st.button("🔍 Scan Saham IDX (Yahoo Finance)"):
-    rows=[]
+ALL_SYMBOLS = load_idx_symbols_from_excel(EXCEL_PATH)
+IDX_SYMBOLS = filter_by_volume(ALL_SYMBOLS, MIN_VOLUME)
 
-    for s in IDX_SYMBOLS:
-        try:
-            df1h = fetch_ohlcv(s, ENTRY_INTERVAL, LOOKBACK_1H)
-            df1d = fetch_ohlcv(s, DAILY_INTERVAL, LOOKBACK_1D)
+st.caption(f"📊 Saham IDX likuid: {len(IDX_SYMBOLS)} / {len(ALL_SYMBOLS)}")
 
-            stl, trend = supertrend(df1h, ATR_PERIOD, MULTIPLIER)
-            if trend.iloc[-1] != 1:
+update_trade_outcome()
+
+tab1, tab2, tab3 = st.tabs(["📡 Scanner","📜 Riwayat","🎲 Monte Carlo"])
+
+with tab1:
+    if st.button("🔍 Scan Seluruh Saham IDX"):
+        found=[]
+        for s in IDX_SYMBOLS:
+            try:
+                df1h = fetch_ohlcv(s, ENTRY_INTERVAL, LOOKBACK_1H)
+                df1d = fetch_ohlcv(s, DAILY_INTERVAL, LOOKBACK_1D)
+
+                stl, trend = supertrend(df1h, ATR_PERIOD, MULTIPLIER)
+                if trend.iloc[-1] != 1:
+                    continue
+
+                score = calculate_score(df1h, df1d)
+                if score < 6:
+                    continue
+
+                trade = trade_levels(df1d)
+                if not trade:
+                    continue
+
+                price = df1h.close.iloc[-1]
+                label = auto_label(trade, price)
+
+                sig = {
+                    "Time": now_wib(),
+                    "Symbol": s,
+                    "Phase": "AKUMULASI_KUAT",
+                    "Score": score,
+                    "Rating": "⭐"*score,
+                    **trade,
+                    "Status": "OPEN",
+                    "Label": label
+                }
+
+                save_signal(sig)
+                found.append(sig)
+
+                time.sleep(0.2)
+
+            except:
                 continue
 
-            score = calculate_score(df1h, df1d)
-            if score < 6:
-                continue
+        st.success(f"🔥 {len(found)} SIGNAL AKUMULASI_KUAT")
 
-            trade = trade_levels(df1d)
-            if not trade:
-                continue
+with tab2:
+    st.dataframe(pd.read_csv(SIGNAL_FILE), use_container_width=True)
 
-            price = df1h.close.iloc[-1]
-            label = auto_label(trade, price)
-
-            rows.append({
-                "Time": now_wib(),
-                "Symbol": s,
-                "Phase": "AKUMULASI_KUAT",
-                "Score": score,
-                "Rating": "⭐"*score,
-                "Last": round(price,2),
-                "Label": label,
-                **trade
-            })
-
-            time.sleep(1)
-
-        except Exception as e:
-            st.warning(f"{s} error: {e}")
-
-    if not rows:
-        st.warning("⚠️ Tidak ada saham yang lolos filter.")
+with tab3:
+    trades = pd.read_csv(TRADE_FILE)
+    if len(trades) < 10:
+        st.warning("Trade belum cukup untuk Monte Carlo (min 10).")
     else:
-        df = pd.DataFrame(rows).sort_values("Score", ascending=False)
-        st.dataframe(df, use_container_width=True)
+        r = trades.R.values
+        risk = st.slider("Risk / Trade (%)",0.5,3.0,1.0)/100
+        t = st.slider("Jumlah Trade",50,300,150)
 
-        for _, r in df.iterrows():
-            with st.expander(f"{r.Symbol} | {r.Label} | {r.Rating}"):
-                dfc = fetch_ohlcv(r.Symbol, ENTRY_INTERVAL, LOOKBACK_1H)
-                stl,_ = supertrend(dfc, ATR_PERIOD, MULTIPLIER)
-                adl = accumulation_distribution(dfc)
-                st.plotly_chart(render_chart(dfc, stl, adl, r), use_container_width=True)
+        if st.button("🎲 Run Monte Carlo"):
+            curves = monte_carlo(r,100_000_000,risk,t,500)
+            st.metric("Median Balance",f"Rp {np.median(curves[:,-1]):,.0f}")
+            st.metric("Risk of Ruin",f"{(curves[:,-1]<50_000_000).mean()*100:.2f}%")
