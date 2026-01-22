@@ -86,32 +86,37 @@ def fetch_ohlcv(symbol, interval, period):
 # =====================================================
 # INDICATORS
 # =====================================================
-def supertrend(df, p, m):
-    h,l,c = df.high,df.low,df.close
+def supertrend(df, period, mult):
+    high = df["high"].astype(float)
+    low = df["low"].astype(float)
+    close = df["close"].astype(float)
+
     tr = pd.concat([
-        h-l,
-        (h-c.shift()).abs(),
-        (l-c.shift()).abs()
-    ],axis=1).max(axis=1)
+        high - low,
+        (high - close.shift()).abs(),
+        (low - close.shift()).abs()
+    ], axis=1).max(axis=1)
 
-    atr = tr.ewm(span=p,adjust=False).mean()
-    hl2 = (h+l)/2
-    upper = hl2 + m*atr
-    lower = hl2 - m*atr
+    atr = tr.ewm(span=period, adjust=False).mean()
+    hl2 = (high + low) / 2
 
-    stl = pd.Series(index=df.index,dtype=float)
-    trend = pd.Series(index=df.index,dtype=int)
+    upper = hl2 + mult * atr
+    lower = hl2 - mult * atr
 
+    stl = pd.Series(index=df.index, dtype=float)
+    trend = pd.Series(index=df.index, dtype=int)
+
+    # init
+    stl.iloc[0] = float(lower.iloc[0])
     trend.iloc[0] = 1
-    stl.iloc[0] = lower.iloc[0]
 
-    for i in range(1,len(df)):
+    for i in range(1, len(df)):
         if trend.iloc[i-1] == 1:
-            stl.iloc[i] = max(lower.iloc[i], stl.iloc[i-1])
-            trend.iloc[i] = 1 if c.iloc[i] > stl.iloc[i] else -1
+            stl.iloc[i] = max(float(lower.iloc[i]), float(stl.iloc[i-1]))
+            trend.iloc[i] = 1 if close.iloc[i] > stl.iloc[i] else -1
         else:
-            stl.iloc[i] = min(upper.iloc[i], stl.iloc[i-1])
-            trend.iloc[i] = -1 if c.iloc[i] < stl.iloc[i] else 1
+            stl.iloc[i] = min(float(upper.iloc[i]), float(stl.iloc[i-1]))
+            trend.iloc[i] = -1 if close.iloc[i] < stl.iloc[i] else 1
 
     return stl, trend
 
