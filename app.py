@@ -2,15 +2,13 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import yfinance as yf
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import time, os
 from datetime import datetime, time as dtime, timezone, timedelta
 
 # =====================================================
 # STREAMLIT
 # =====================================================
-st.set_page_config("IDX PRO Scanner — FINAL", layout="wide")
+st.set_page_config("IDX PRO Scanner — FINAL STABLE", layout="wide")
 st.title("📈 IDX PRO Scanner — Yahoo Finance (IDX ALL STOCKS)")
 
 # =====================================================
@@ -28,14 +26,15 @@ def now_wib():
     return datetime.now(WIB).strftime("%Y-%m-%d %H:%M WIB")
 
 # =====================================================
-# CONFIG
+# CONFIG (REALISTIS IDX)
 # =====================================================
 ENTRY_INTERVAL = "1h"
 DAILY_INTERVAL = "1d"
 LOOKBACK_1H = "6mo"
 LOOKBACK_1D = "3y"
 
-MIN_VOLUME = 1_000_000
+MIN_AVG_VOLUME = 500_000   # 🔥 FIX UTAMA
+MIN_SCORE = 6
 
 ATR_PERIOD = 10
 MULTIPLIER = 3.0
@@ -83,23 +82,20 @@ def is_market_open():
     )
 
 # =====================================================
-# SIDEBAR — EXCEL UPLOAD
+# SIDEBAR
 # =====================================================
 st.sidebar.header("📂 Master Saham IDX")
-
 uploaded_file = st.sidebar.file_uploader(
-    "Upload Excel (1 kolom kode saham)",
+    "Upload Excel (1 kolom kode saham IDX)",
     type=["xlsx"]
 )
 
 # =====================================================
-# LOAD SYMBOLS (SINGLE COLUMN ONLY)
+# LOAD SYMBOLS (SINGLE COLUMN)
 # =====================================================
 @st.cache_data(ttl=3600)
 def load_idx_symbols_from_excel(file):
     df = pd.read_excel(file)
-
-    # AMBIL KOLOM PERTAMA SAJA
     col = df.columns[0]
 
     symbols = (
@@ -111,27 +107,38 @@ def load_idx_symbols_from_excel(file):
         .unique()
         .tolist()
     )
-
     return [s + ".JK" for s in symbols if len(s) >= 3]
 
 # =====================================================
-# FILTER VOLUME (YAHOO)
+# FILTER VOLUME — AVG 5 DAYS (FIX IDX)
 # =====================================================
 @st.cache_data(ttl=1800)
 def filter_by_volume(symbols, min_volume):
     liquid=[]
     for s in symbols:
         try:
-            df = yf.download(s, period="5d", interval="1d", progress=False)
-            if not df.empty and df["Volume"].iloc[-1] >= min_volume:
+            df = yf.download(
+                s,
+                period="10d",
+                interval="1d",
+                progress=False
+            )
+            if df.empty or "Volume" not in df.columns:
+                continue
+
+            avg_vol = df["Volume"].dropna().tail(5).mean()
+
+            if avg_vol >= min_volume:
                 liquid.append(s)
+
             time.sleep(0.15)
+
         except:
             continue
     return liquid
 
 # =====================================================
-# FETCH OHLCV (SAFE)
+# FETCH OHLCV
 # =====================================================
 @st.cache_data(ttl=300)
 def fetch_ohlcv(symbol, interval, period):
@@ -139,7 +146,6 @@ def fetch_ohlcv(symbol, interval, period):
         symbol,
         interval=interval,
         period=period,
-        group_by="column",
         progress=False
     )
     if df.empty:
@@ -151,10 +157,7 @@ def fetch_ohlcv(symbol, interval, period):
         df.columns = [c.lower() for c in df.columns]
 
     df = df[["open","high","low","close","volume"]].dropna()
-    for c in df.columns:
-        df[c] = pd.to_numeric(df[c], errors="coerce")
-
-    return df.dropna()
+    return df
 
 # =====================================================
 # INDICATORS
@@ -312,11 +315,12 @@ def monte_carlo(r, initial, risk, trades, sims):
 # MAIN FLOW
 # =====================================================
 if not uploaded_file:
-    st.warning("⬅️ Upload Excel berisi kode saham IDX terlebih dahulu")
+    st.warning("⬅️ Upload Excel berisi kode saham IDX")
     st.stop()
 
 ALL_SYMBOLS = load_idx_symbols_from_excel(uploaded_file)
-IDX_SYMBOLS = filter_by_volume(ALL_SYMBOLS, MIN_VOLUME)
+IDX_SYMBOLS = filter_by_volume(ALL_SYMBOLS, MIN_AVG_VOLUME)
+
 st.caption(f"📊 Saham likuid: {len(IDX_SYMBOLS)} / {len(ALL_SYMBOLS)}")
 
 update_trade_outcome()
@@ -331,12 +335,12 @@ with tab1:
                 df1h=fetch_ohlcv(s,ENTRY_INTERVAL,LOOKBACK_1H)
                 df1d=fetch_ohlcv(s,DAILY_INTERVAL,LOOKBACK_1D)
 
-                stl,trend=supertrend(df1h,ATR_PERIOD,MULTIPLIER)
+                _,trend=supertrend(df1h,ATR_PERIOD,MULTIPLIER)
                 if trend.iloc[-1]!=1:
                     continue
 
                 score=calculate_score(df1h,df1d)
-                if score<6:
+                if score<MIN_SCORE:
                     continue
 
                 trade=trade_levels(df1d)
@@ -359,7 +363,7 @@ with tab1:
 
                 save_signal(sig)
                 found.append(sig)
-                time.sleep(0.2)
+                time.sleep(0.15)
 
             except:
                 continue
