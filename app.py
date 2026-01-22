@@ -6,9 +6,9 @@ import os, time
 from datetime import datetime, timezone, timedelta
 
 # =====================================================
-# APP CONFIG
+# STREAMLIT CONFIG
 # =====================================================
-st.set_page_config("IDX PRO Scanner — FULL SUITE", layout="wide")
+st.set_page_config("IDX PRO Scanner — FULL FIXED", layout="wide")
 st.title("🚀 IDX PRO Scanner — Yahoo Finance (FULL SUITE)")
 
 DEBUG = st.sidebar.toggle("🧪 Debug Mode", False)
@@ -34,6 +34,7 @@ LOOKBACK_1D = "3y"
 MIN_AVG_VOLUME = 300_000
 ATR_PERIOD = 10
 MULTIPLIER = 3.0
+
 VO_FAST = 14
 VO_SLOW = 28
 
@@ -52,7 +53,7 @@ if not os.path.exists(SIGNAL_FILE):
     ]).to_csv(SIGNAL_FILE, index=False)
 
 # =====================================================
-# SIDEBAR — SYMBOL SOURCE
+# SIDEBAR — EXCEL UPLOAD (GUARD WAJIB)
 # =====================================================
 st.sidebar.header("📂 Master Saham IDX")
 uploaded_file = st.sidebar.file_uploader(
@@ -60,18 +61,26 @@ uploaded_file = st.sidebar.file_uploader(
     type=["xlsx"]
 )
 
+# 🔥 GUARD PALING PENTING (FIX ERROR 0/256)
+if uploaded_file is None:
+    st.warning("⬅️ Upload Excel kode saham IDX dulu")
+    st.stop()
+
 # =====================================================
-# HELPERS
+# LOAD SYMBOLS
 # =====================================================
 @st.cache_data(ttl=3600)
 def load_symbols(file):
     df = pd.read_excel(file)
     col = df.columns[0]
     syms = (
-        df[col].astype(str)
-        .str.upper().str.strip()
+        df[col]
+        .astype(str)
+        .str.upper()
+        .str.strip()
         .str.replace(r"[^A-Z0-9]", "", regex=True)
-        .unique().tolist()
+        .unique()
+        .tolist()
     )
     return [s + ".JK" for s in syms if len(s) >= 3]
 
@@ -102,7 +111,7 @@ def fetch_ohlcv(symbol, interval, period):
     return df[["open","high","low","close","volume"]].astype(float).dropna()
 
 # =====================================================
-# INDICATORS
+# INDICATORS (SAFE)
 # =====================================================
 def supertrend(df, period, mult):
     h,l,c = df.high.values, df.low.values, df.close.values
@@ -144,6 +153,9 @@ def find_support(df, lb):
             sup.append(lows[i])
     return sup
 
+# =====================================================
+# SCORE & TRADE
+# =====================================================
 def calculate_score(df1h, df1d):
     score=0
     ema20=df1h.close.ewm(span=20).mean()
@@ -176,9 +188,6 @@ def trade_levels(df1d):
     if entry-sl<entry*MIN_RISK_PCT: return None
     return entry, sl
 
-# =====================================================
-# AUTO LABEL
-# =====================================================
 def auto_label(price, entry, sl, tp2):
     if price < sl:
         return "NO REENTRY"
@@ -191,7 +200,15 @@ def auto_label(price, entry, sl, tp2):
     return ""
 
 # =====================================================
-# UI TABS
+# LOAD SYMBOLS
+# =====================================================
+ALL = load_symbols(uploaded_file)
+LIQ = filter_by_volume(ALL)
+
+st.caption(f"📊 Saham likuid: {len(LIQ)} / {len(ALL)}")
+
+# =====================================================
+# TABS
 # =====================================================
 tab1, tab2, tab3 = st.tabs(["🔍 Scanner", "📜 Riwayat", "🎲 Monte Carlo"])
 
@@ -199,14 +216,6 @@ tab1, tab2, tab3 = st.tabs(["🔍 Scanner", "📜 Riwayat", "🎲 Monte Carlo"])
 # TAB 1 — SCANNER
 # =====================================================
 with tab1:
-    if not uploaded_file:
-        st.warning("⬅️ Upload Excel kode saham IDX")
-        st.stop()
-
-    ALL = load_symbols(uploaded_file)
-    LIQ = filter_by_volume(ALL)
-    st.caption(f"Saham likuid: {len(LIQ)} / {len(ALL)}")
-
     if st.button("🔍 Scan Saham IDX (Rating 10)"):
         found=[]
         for s in LIQ:
@@ -223,8 +232,9 @@ with tab1:
                 entry, sl = trade
 
                 price=df1h.close.iloc[-1]
+                tp2 = entry+(entry-sl)*2.0
 
-                sig={
+                found.append({
                     "Time":now_wib(),
                     "Symbol":s,
                     "Phase":"AKUMULASI_KUAT",
@@ -233,13 +243,12 @@ with tab1:
                     "Entry":round(entry,2),
                     "SL":round(sl,2),
                     "TP1":round(entry+(entry-sl)*0.8,2),
-                    "TP2":round(entry+(entry-sl)*2.0,2),
+                    "TP2":round(tp2,2),
                     "Label":"NEW",
-                    "AutoLabel":auto_label(price,entry,sl,entry+(entry-sl)*2),
+                    "AutoLabel":auto_label(price,entry,sl,tp2),
                     "Status":"OPEN",
                     "R":np.nan
-                }
-                found.append(sig)
+                })
             except:
                 pass
 
@@ -262,11 +271,7 @@ with tab2:
         st.info("Belum ada riwayat")
     else:
         st.dataframe(hist,use_container_width=True)
-        st.download_button(
-            "⬇️ Download CSV",
-            hist.to_csv(index=False),
-            "signal_history.csv"
-        )
+        st.download_button("⬇️ Download CSV", hist.to_csv(index=False), "signal_history.csv")
 
 # =====================================================
 # TAB 3 — MONTE CARLO
