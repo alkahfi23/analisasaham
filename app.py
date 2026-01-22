@@ -272,8 +272,8 @@ if st.button("🔍 Scan Saham IDX"):
                 if DEBUG: st.write(f"{s} ❌ Score {score}")
                 continue
 
-            trade=trade_levels(df1d)
-            if not trade:
+            trade = trade_levels(df1d)
+            if trade is None:
                 if DEBUG: st.write(f"{s} ❌ Risk / support invalid")
                 continue
 
