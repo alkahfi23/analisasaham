@@ -98,18 +98,41 @@ uploaded_file = st.sidebar.file_uploader(
 @st.cache_data(ttl=3600)
 def load_idx_symbols_from_excel(file):
     df = pd.read_excel(file)
-    possible_cols = ["Kode Saham","Kode","Ticker","Symbol"]
-    col = next(c for c in possible_cols if c in df.columns)
+
+    # normalize column names
+    cols = {c.lower().strip(): c for c in df.columns}
+
+    # kandidat nama kolom
+    candidates = [
+        "kode saham", "kode", "ticker", "symbol",
+        "stock code", "security code", "trading code", "code"
+    ]
+
+    col = None
+    for key in candidates:
+        if key in cols:
+            col = cols[key]
+            break
+
+    if col is None:
+        st.error(
+            "❌ Tidak menemukan kolom KODE SAHAM di Excel.\n\n"
+            f"Kolom yang tersedia:\n{list(df.columns)}"
+        )
+        st.stop()
 
     symbols = (
         df[col]
         .astype(str)
         .str.upper()
         .str.strip()
+        .str.replace(r"[^A-Z0-9]", "", regex=True)
         .unique()
         .tolist()
     )
-    return [s + ".JK" for s in symbols if s.isalnum()]
+
+    return [s + ".JK" for s in symbols if len(s) >= 3]
+
 
 # =====================================================
 # FILTER BY VOLUME
