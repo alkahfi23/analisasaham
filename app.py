@@ -221,15 +221,28 @@ def calculate_score(df1h,df1d):
     return score
 
 def trade_levels(df1d):
-    entry=df1d.close.iloc[-1]
-    sup=[s for s in find_support(df1d,SR_LOOKBACK) if s<entry]
-    if not sup:
+    entry = float(df1d.close.iloc[-1])
+
+    supports = find_support(df1d, SR_LOOKBACK)
+
+    # ⬇️ FIX PALING PENTING
+    if supports is None or len(supports) == 0:
         return None
-    sl=max(sup)*(1-ZONE_BUFFER)
-    risk=entry-sl
-    if risk<entry*MIN_RISK_PCT:
+
+    # pastikan semua support float
+    supports = [float(s) for s in supports if s < entry]
+
+    if len(supports) == 0:
         return None
+
+    sl = max(supports) * (1 - ZONE_BUFFER)
+    risk = entry - sl
+
+    if risk < entry * MIN_RISK_PCT:
+        return None
+
     return entry, sl
+
 
 # =====================================================
 # MAIN FLOW
