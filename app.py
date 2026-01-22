@@ -8,10 +8,10 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 # =====================================================
-# STREAMLIT CONFIG
+# STREAMLIT
 # =====================================================
-st.set_page_config("IDX PRO Scanner (Yahoo Finance)", layout="wide")
-st.title("📈 IDX PRO Scanner — Yahoo Finance (STABLE)")
+st.set_page_config("IDX PRO Scanner (Yahoo)", layout="wide")
+st.title("📈 IDX PRO Scanner — Yahoo Finance (FINAL STABLE)")
 
 # =====================================================
 # TIMEZONE
@@ -24,11 +24,12 @@ def now_wib():
 # =====================================================
 # CONFIG
 # =====================================================
-ENTRY_INTERVAL = "1h"   # Yahoo: 1h
-DAILY_INTERVAL = "1d"
+IDX_SYMBOLS = ["BBRI.JK","BMRI.JK","BBCA.JK","TLKM.JK","ASII.JK"]
 
+ENTRY_INTERVAL = "1h"
+DAILY_INTERVAL = "1d"
 LOOKBACK_1H = "6mo"
-LOOKBACK_1D = "2y"
+LOOKBACK_1D = "3y"
 
 ATR_PERIOD = 10
 MULTIPLIER = 3.0
@@ -42,16 +43,10 @@ ZONE_BUFFER = 0.01
 
 TP1_R = 0.8
 TP2_R = 2.0
-
 MIN_RISK_PCT = 0.01
 
 RETEST_TOL = 0.005
 TP_EXTEND = 0.9
-
-IDX_SYMBOLS = [
-    "BBRI.JK","BMRI.JK","BBCA.JK",
-    "TLKM.JK","ASII.JK"
-]
 
 # =====================================================
 # MARKET HOURS IDX
@@ -67,7 +62,7 @@ def is_market_open():
     )
 
 # =====================================================
-# DATA FETCH (YAHOO)
+# YAHOO DATA (SAFE)
 # =====================================================
 @st.cache_data(ttl=300)
 def fetch_ohlcv(symbol, interval, period):
@@ -75,50 +70,62 @@ def fetch_ohlcv(symbol, interval, period):
         symbol,
         interval=interval,
         period=period,
+        group_by="column",
         auto_adjust=False,
         progress=False
     )
+
     if df.empty:
         raise RuntimeError("No data")
-    df = df.rename(columns=str.lower)
-    return df[["open","high","low","close","volume"]]
+
+    # flatten column
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = [c[0].lower() for c in df.columns]
+    else:
+        df.columns = [c.lower() for c in df.columns]
+
+    df = df[["open","high","low","close","volume"]].dropna()
+
+    for c in df.columns:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    return df.dropna()
 
 # =====================================================
-# INDICATORS
+# INDICATORS (NUMPY SAFE)
 # =====================================================
 def supertrend(df, period, mult):
-    high = df["high"].astype(float)
-    low = df["low"].astype(float)
-    close = df["close"].astype(float)
+    high = df["high"].values
+    low = df["low"].values
+    close = df["close"].values
 
-    tr = pd.concat([
+    tr = np.maximum.reduce([
         high - low,
-        (high - close.shift()).abs(),
-        (low - close.shift()).abs()
-    ], axis=1).max(axis=1)
+        np.abs(high - np.roll(close, 1)),
+        np.abs(low - np.roll(close, 1))
+    ])
+    tr[0] = high[0] - low[0]
 
-    atr = tr.ewm(span=period, adjust=False).mean()
+    atr = pd.Series(tr).ewm(span=period, adjust=False).mean().values
     hl2 = (high + low) / 2
 
     upper = hl2 + mult * atr
     lower = hl2 - mult * atr
 
-    stl = pd.Series(index=df.index, dtype=float)
-    trend = pd.Series(index=df.index, dtype=int)
+    stl = np.zeros(len(df))
+    trend = np.ones(len(df))
 
-    # init
-    stl.iloc[0] = float(lower.iloc[0])
-    trend.iloc[0] = 1
+    stl[0] = lower[0]
 
     for i in range(1, len(df)):
-        if trend.iloc[i-1] == 1:
-            stl.iloc[i] = max(float(lower.iloc[i]), float(stl.iloc[i-1]))
-            trend.iloc[i] = 1 if close.iloc[i] > stl.iloc[i] else -1
+        if trend[i-1] == 1:
+            stl[i] = max(lower[i], stl[i-1])
+            trend[i] = 1 if close[i] > stl[i] else -1
         else:
-            stl.iloc[i] = min(float(upper.iloc[i]), float(stl.iloc[i-1]))
-            trend.iloc[i] = -1 if close.iloc[i] < stl.iloc[i] else 1
+            stl[i] = min(upper[i], stl[i-1])
+            trend[i] = -1 if close[i] < stl[i] else 1
 
-    return stl, trend
+    return pd.Series(stl, index=df.index), pd.Series(trend, index=df.index)
 
 def volume_osc(v,f,s):
     return (v.ewm(span=f).mean() - v.ewm(span=s).mean()) / v.ewm(span=s).mean() * 100
@@ -132,41 +139,39 @@ def accumulation_distribution(df):
 def find_support(df,lb):
     levels=[]
     for i in range(lb,len(df)-lb):
-        if df.low.iloc[i] == min(df.low.iloc[i-lb:i+lb+1]):
+        if df.low.iloc[i]==min(df.low.iloc[i-lb:i+lb+1]):
             levels.append(df.low.iloc[i])
-    levels = sorted(set(levels))
     clean=[]
-    for s in levels:
-        if not clean or abs(s-clean[-1])/clean[-1] > 0.02:
+    for s in sorted(levels):
+        if not clean or abs(s-clean[-1])/clean[-1]>0.02:
             clean.append(s)
     return clean
 
 # =====================================================
-# SCORING & TRADE
+# LOGIC
 # =====================================================
 def calculate_score(df1h, df1d):
     score = 0
-
     ema20 = df1h.close.ewm(span=20).mean()
     ema50 = df1h.close.ewm(span=50).mean()
     ema200 = df1d.close.ewm(span=200).mean()
 
     price = df1h.close.iloc[-1]
 
-    if price > ema20.iloc[-1]: score += 1
-    if ema20.iloc[-1] > ema50.iloc[-1]: score += 1
-    if ema50.iloc[-1] > ema200.iloc[-1]: score += 1
-    if price > ema200.iloc[-1]: score += 1
+    if price > ema20.iloc[-1]: score+=1
+    if ema20.iloc[-1] > ema50.iloc[-1]: score+=1
+    if ema50.iloc[-1] > ema200.iloc[-1]: score+=1
+    if price > ema200.iloc[-1]: score+=1
 
     vo = volume_osc(df1h.volume, VO_FAST, VO_SLOW).iloc[-1]
-    if vo > 5: score += 1
-    if vo > 10: score += 1
-    if vo > 20: score += 1
+    if vo > 5: score+=1
+    if vo > 10: score+=1
+    if vo > 20: score+=1
 
     adl = accumulation_distribution(df1h)
-    if adl.iloc[-1] > adl.iloc[-5]: score += 1
-    if adl.iloc[-1] > adl.iloc[-10]: score += 1
-    if adl.iloc[-1] > adl.iloc[-20]: score += 1
+    if adl.iloc[-1] > adl.iloc[-5]: score+=1
+    if adl.iloc[-1] > adl.iloc[-10]: score+=1
+    if adl.iloc[-1] > adl.iloc[-20]: score+=1
 
     return score
 
@@ -176,17 +181,16 @@ def trade_levels(df1d):
     if not supports:
         return None
 
-    sl = max(supports) * (1 - ZONE_BUFFER)
+    sl = max(supports) * (1-ZONE_BUFFER)
     risk = entry - sl
-
     if risk < entry * MIN_RISK_PCT:
         return None
 
     return {
         "Entry": round(entry,2),
         "SL": round(sl,2),
-        "TP1": round(entry + risk * TP1_R,2),
-        "TP2": round(entry + risk * TP2_R,2)
+        "TP1": round(entry + risk*TP1_R,2),
+        "TP2": round(entry + risk*TP2_R,2)
     }
 
 def auto_label(sig, price):
@@ -204,18 +208,12 @@ def auto_label(sig, price):
 def render_chart(df, stl, adl, sig):
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7,0.3])
     fig.add_candlestick(
-        x=df.index,
-        open=df.open,
-        high=df.high,
-        low=df.low,
-        close=df.close,
-        row=1,col=1
+        x=df.index, open=df.open, high=df.high,
+        low=df.low, close=df.close, row=1,col=1
     )
     fig.add_trace(go.Scatter(x=df.index,y=stl,line=dict(color="lime")),row=1,col=1)
-
     for k,c in [("Entry","cyan"),("SL","red"),("TP1","orange"),("TP2","purple")]:
-        fig.add_hline(y=float(sig[k]),line_color=c,row=1)
-
+        fig.add_hline(y=sig[k],line_color=c,row=1)
     fig.add_trace(go.Scatter(x=df.index,y=adl,line=dict(color="cyan")),row=2,col=1)
     fig.update_layout(template="plotly_dark",height=520,xaxis_rangeslider_visible=False)
     return fig
@@ -251,7 +249,7 @@ if st.button("🔍 Scan Saham IDX (Yahoo Finance)"):
                 "Symbol": s,
                 "Phase": "AKUMULASI_KUAT",
                 "Score": score,
-                "Rating": "⭐" * score,
+                "Rating": "⭐"*score,
                 "Last": round(price,2),
                 "Label": label,
                 **trade
