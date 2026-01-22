@@ -11,7 +11,7 @@ from plotly.subplots import make_subplots
 # STREAMLIT CONFIG
 # =====================================================
 st.set_page_config("IDX PRO Scanner (TradingView)", layout="wide")
-st.title("📈 IDX PRO Scanner — TradingView (Render VPS)")
+st.title("📈 IDX PRO Scanner — TradingView LIVE (Render)")
 
 # =====================================================
 # TIMEZONE
@@ -26,9 +26,6 @@ def now_wib():
 # =====================================================
 ENTRY_TF = "4h"
 DAILY_TF = "1d"
-
-LIMIT_4H = 200
-LIMIT_1D = 200
 
 ATR_PERIOD = 10
 MULTIPLIER = 3.0
@@ -67,7 +64,7 @@ def is_market_open():
     )
 
 # =====================================================
-# TRADINGVIEW DATA
+# TRADINGVIEW DATA (NON-OFFICIAL, PRACTICAL)
 # =====================================================
 TV_TF_MAP = {"4h": "240", "1d": "D"}
 
@@ -114,7 +111,7 @@ class TradingViewData:
         d = r.json()["data"][0]["d"]
         price = d.get("lp")
         if price is None:
-            raise ValueError("Price unavailable")
+            raise ValueError("Last price unavailable")
         return float(price)
 
 # =====================================================
@@ -241,33 +238,10 @@ def render_chart(df,stl,adl,sig):
     return fig
 
 # =====================================================
-# MONTE CARLO
-# =====================================================
-def monte_carlo(rvals,initial,risk,trades,sims):
-    curves=[]
-    for _ in range(sims):
-        bal=initial; eq=[bal]
-        for _ in range(trades):
-            r=np.random.choice(rvals)
-            bal+=bal*risk*r
-            eq.append(bal)
-        curves.append(eq)
-    return np.array(curves)
-
-def mc_metrics(curves,initial):
-    final=curves[:,-1]
-    return {
-        "Median":np.median(final),
-        "Worst5":np.percentile(final,5),
-        "Ruin%":(final<initial*0.5).mean()*100
-    }
-
-# =====================================================
 # UI
 # =====================================================
-tab1,tab2=st.tabs(["📡 Scanner IDX","🎲 Monte Carlo"])
-
-tv=TradingViewData()
+tab1 = st.tabs(["📡 Scanner IDX"])[0]
+tv = TradingViewData()
 
 with tab1:
     if st.button("🔍 Scan Saham IDX (TradingView)"):
@@ -276,6 +250,7 @@ with tab1:
             try:
                 df4h=tv.get_ohlcv(s,ENTRY_TF)
                 df1d=tv.get_ohlcv(s,DAILY_TF)
+
                 if reject_ara_arb(df1d): continue
 
                 stl,trend=supertrend(df4h,ATR_PERIOD,MULTIPLIER)
@@ -311,34 +286,19 @@ with tab1:
             except Exception as e:
                 st.warning(f"{s} error: {e}")
 
-        df=pd.DataFrame(rows).sort_values("Score",ascending=False)
-        st.dataframe(df,use_container_width=True)
+        # ===== SAFE OUTPUT (FIX KEYERROR) =====
+        if not rows:
+            st.warning("⚠️ Tidak ada saham yang lolos filter AKUMULASI_KUAT.")
+        else:
+            df=pd.DataFrame(rows)
+            if "Score" in df.columns:
+                df=df.sort_values("Score",ascending=False)
 
-        for _,r in df.iterrows():
-            with st.expander(f"{r.Symbol} | {r.Label} | {r.Rating}"):
-                dfc=tv.get_ohlcv(r.Symbol,ENTRY_TF,120)
-                stl,_=supertrend(dfc,ATR_PERIOD,MULTIPLIER)
-                adl=accumulation_distribution(dfc)
-                st.plotly_chart(render_chart(dfc,stl,adl,r),use_container_width=True)
+            st.dataframe(df,use_container_width=True)
 
-with tab2:
-    st.subheader("🎲 Monte Carlo — Saham IDX")
-    r_values=[-1,-1,0.8,2.0,0.8,-1,2.0]
-    initial=st.number_input("Modal Awal (IDR)",100_000_000,step=10_000_000)
-    risk=st.slider("Risk / Trade (%)",0.25,1.0,0.5)/100
-    trades=st.slider("Trades / Simulation",50,300,150)
-    sims=st.slider("Simulations",300,1000,500)
-
-    if st.button("Run Monte Carlo"):
-        curves=monte_carlo(r_values,initial,risk,trades,sims)
-        m=mc_metrics(curves,initial)
-        c1,c2,c3=st.columns(3)
-        c1.metric("Median",f"Rp {m['Median']:,.0f}")
-        c2.metric("Worst 5%",f"Rp {m['Worst5']:,.0f}")
-        c3.metric("Risk of Ruin",f"{m['Ruin%']:.2f}%")
-
-        fig=go.Figure()
-        for i in range(min(30,len(curves))):
-            fig.add_trace(go.Scatter(y=curves[i],opacity=0.3,showlegend=False))
-        fig.update_layout(template="plotly_dark",height=400)
-        st.plotly_chart(fig,use_container_width=True)
+            for _,r in df.iterrows():
+                with st.expander(f"{r.Symbol} | {r.Label} | {r.Rating}"):
+                    dfc=tv.get_ohlcv(r.Symbol,ENTRY_TF,120)
+                    stl,_=supertrend(dfc,ATR_PERIOD,MULTIPLIER)
+                    adl=accumulation_distribution(dfc)
+                    st.plotly_chart(render_chart(dfc,stl,adl,r),use_container_width=True)
