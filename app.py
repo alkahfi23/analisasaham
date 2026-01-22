@@ -11,7 +11,7 @@ from datetime import datetime, time as dtime, timezone, timedelta
 # STREAMLIT
 # =====================================================
 st.set_page_config("IDX PRO Scanner — FINAL", layout="wide")
-st.title("📈 IDX PRO Scanner — Yahoo Finance (ALL IDX STOCKS)")
+st.title("📈 IDX PRO Scanner — Yahoo Finance (IDX ALL STOCKS)")
 
 # =====================================================
 # FILES
@@ -70,7 +70,7 @@ def init_files():
 init_files()
 
 # =====================================================
-# MARKET HOURS
+# MARKET HOURS IDX
 # =====================================================
 def is_market_open():
     now = datetime.now(WIB)
@@ -83,43 +83,24 @@ def is_market_open():
     )
 
 # =====================================================
-# SIDEBAR — UPLOAD EXCEL
+# SIDEBAR — EXCEL UPLOAD
 # =====================================================
-st.sidebar.header("📂 Data Saham IDX")
+st.sidebar.header("📂 Master Saham IDX")
 
 uploaded_file = st.sidebar.file_uploader(
-    "Upload Stock List IDX (Excel)",
+    "Upload Excel (1 kolom kode saham)",
     type=["xlsx"]
 )
 
 # =====================================================
-# LOAD SYMBOL FROM EXCEL
+# LOAD SYMBOLS (SINGLE COLUMN ONLY)
 # =====================================================
 @st.cache_data(ttl=3600)
 def load_idx_symbols_from_excel(file):
     df = pd.read_excel(file)
 
-    # normalize column names
-    cols = {c.lower().strip(): c for c in df.columns}
-
-    # kandidat nama kolom
-    candidates = [
-        "kode saham", "kode", "ticker", "symbol",
-        "stock code", "security code", "trading code", "code"
-    ]
-
-    col = None
-    for key in candidates:
-        if key in cols:
-            col = cols[key]
-            break
-
-    if col is None:
-        st.error(
-            "❌ Tidak menemukan kolom KODE SAHAM di Excel.\n\n"
-            f"Kolom yang tersedia:\n{list(df.columns)}"
-        )
-        st.stop()
+    # AMBIL KOLOM PERTAMA SAJA
+    col = df.columns[0]
 
     symbols = (
         df[col]
@@ -133,9 +114,8 @@ def load_idx_symbols_from_excel(file):
 
     return [s + ".JK" for s in symbols if len(s) >= 3]
 
-
 # =====================================================
-# FILTER BY VOLUME
+# FILTER VOLUME (YAHOO)
 # =====================================================
 @st.cache_data(ttl=1800)
 def filter_by_volume(symbols, min_volume):
@@ -143,9 +123,7 @@ def filter_by_volume(symbols, min_volume):
     for s in symbols:
         try:
             df = yf.download(s, period="5d", interval="1d", progress=False)
-            if df.empty:
-                continue
-            if df["Volume"].iloc[-1] >= min_volume:
+            if not df.empty and df["Volume"].iloc[-1] >= min_volume:
                 liquid.append(s)
             time.sleep(0.15)
         except:
@@ -280,7 +258,7 @@ def auto_label(sig, price):
     return ""
 
 # =====================================================
-# HISTORY
+# HISTORY & MONTE CARLO
 # =====================================================
 def save_signal(sig):
     df=pd.read_csv(SIGNAL_FILE)
@@ -320,9 +298,6 @@ def update_trade_outcome():
     df.to_csv(SIGNAL_FILE,index=False)
     res.to_csv(TRADE_FILE,index=False)
 
-# =====================================================
-# MONTE CARLO
-# =====================================================
 def monte_carlo(r, initial, risk, trades, sims):
     curves=[]
     for _ in range(sims):
@@ -337,7 +312,7 @@ def monte_carlo(r, initial, risk, trades, sims):
 # MAIN FLOW
 # =====================================================
 if not uploaded_file:
-    st.warning("⬅️ Upload file Stock List IDX terlebih dahulu")
+    st.warning("⬅️ Upload Excel berisi kode saham IDX terlebih dahulu")
     st.stop()
 
 ALL_SYMBOLS = load_idx_symbols_from_excel(uploaded_file)
@@ -349,7 +324,7 @@ update_trade_outcome()
 tab1,tab2,tab3 = st.tabs(["📡 Scanner","📜 Riwayat","🎲 Monte Carlo"])
 
 with tab1:
-    if st.button("🔍 Scan Seluruh Saham IDX"):
+    if st.button("🔍 Scan Saham IDX"):
         found=[]
         for s in IDX_SYMBOLS:
             try:
