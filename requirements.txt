@@ -4,3 +4,4 @@ numpy
 streamlit
 plotly
 yfinance
+openpyxl
