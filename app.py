@@ -8,12 +8,9 @@ from datetime import datetime, timezone, timedelta, time as dtime
 # =====================================================
 # STREAMLIT
 # =====================================================
-st.set_page_config("IDX PRO Scanner — DEBUG", layout="wide")
-st.title("📈 IDX PRO Scanner — Yahoo Finance (DEBUG MODE)")
+st.set_page_config("IDX PRO Scanner — DEBUG FINAL", layout="wide")
+st.title("📈 IDX PRO Scanner — Yahoo Finance (DEBUG FINAL)")
 
-# =====================================================
-# DEBUG TOGGLE
-# =====================================================
 DEBUG = st.sidebar.toggle("🧪 Debug Mode", value=True)
 
 # =====================================================
@@ -21,7 +18,6 @@ DEBUG = st.sidebar.toggle("🧪 Debug Mode", value=True)
 # =====================================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SIGNAL_FILE = os.path.join(BASE_DIR, "signal_history.csv")
-TRADE_FILE  = os.path.join(BASE_DIR, "trade_results.csv")
 
 # =====================================================
 # TIMEZONE
@@ -38,7 +34,7 @@ DAILY_INTERVAL = "1d"
 LOOKBACK_1H = "6mo"
 LOOKBACK_1D = "3y"
 
-MIN_AVG_VOLUME = 500_000   # 🔑 penting
+MIN_AVG_VOLUME = 300_000   # lebih realistis IDX
 MIN_SCORE = 6
 
 ATR_PERIOD = 10
@@ -49,59 +45,35 @@ VO_SLOW = 28
 
 SR_LOOKBACK = 5
 ZONE_BUFFER = 0.01
-
-TP1_R = 0.8
-TP2_R = 2.0
 MIN_RISK_PCT = 0.01
-
-RETEST_TOL = 0.005
-TP_EXTEND = 0.9
 
 # =====================================================
 # INIT CSV
 # =====================================================
-def init_files():
-    if not os.path.exists(SIGNAL_FILE):
-        pd.DataFrame(columns=[
-            "Time","Symbol","Phase","Score","Rating",
-            "Entry","SL","TP1","TP2","Status","Label"
-        ]).to_csv(SIGNAL_FILE,index=False)
-
-    if not os.path.exists(TRADE_FILE):
-        pd.DataFrame(columns=["Time","Symbol","R"]).to_csv(TRADE_FILE,index=False)
-
-init_files()
-
-# =====================================================
-# MARKET HOURS IDX
-# =====================================================
-def is_market_open():
-    now = datetime.now(WIB)
-    if now.weekday() >= 5:
-        return False
-    t = now.time()
-    return (
-        dtime(9,0) <= t <= dtime(11,30)
-        or dtime(13,30) <= t <= dtime(15,50)
-    )
+if not os.path.exists(SIGNAL_FILE):
+    pd.DataFrame(columns=[
+        "Time","Symbol","Phase","Score","Rating",
+        "Entry","SL","TP1","TP2","Label"
+    ]).to_csv(SIGNAL_FILE,index=False)
 
 # =====================================================
 # SIDEBAR — EXCEL
 # =====================================================
 st.sidebar.header("📂 Master Saham IDX")
 uploaded_file = st.sidebar.file_uploader(
-    "Upload Excel (1 kolom kode saham)",
+    "Upload Excel (1 kolom kode saham IDX)",
     type=["xlsx"]
 )
 
 # =====================================================
-# LOAD SYMBOLS (KOLOM PERTAMA)
+# LOAD SYMBOLS (KOLOM PERTAMA SAJA)
 # =====================================================
 @st.cache_data(ttl=3600)
 def load_idx_symbols_from_excel(file):
     df = pd.read_excel(file)
     col = df.columns[0]
-    syms = (
+
+    symbols = (
         df[col]
         .astype(str)
         .str.upper()
@@ -110,7 +82,7 @@ def load_idx_symbols_from_excel(file):
         .unique()
         .tolist()
     )
-    return [s + ".JK" for s in syms if len(s) >= 3]
+    return [s + ".JK" for s in symbols if len(s) >= 3]
 
 # =====================================================
 # FILTER VOLUME + DEBUG
@@ -172,33 +144,38 @@ def fetch_ohlcv(symbol, interval, period):
     return df[["open","high","low","close","volume"]].dropna()
 
 # =====================================================
-# INDICATORS
+# INDICATORS (FIXED)
 # =====================================================
 def supertrend(df, period, mult):
-    h,l,c = df.high.values, df.low.values, df.close.values
+    h, l, c = df.high.values, df.low.values, df.close.values
+
     tr = np.maximum.reduce([
-        h-l, np.abs(h-np.roll(c,1)), np.abs(l-np.roll(c,1))
+        h - l,
+        np.abs(h - np.roll(c, 1)),
+        np.abs(l - np.roll(c, 1))
     ])
-    tr[0] = h[0]-l[0]
-    atr = pd.Series(tr).ewm(span=period,adjust=False).mean().values
+    tr[0] = h[0] - l[0]
 
-    hl2 = (h+l)/2
-    upper = hl2 + mult*atr
-    lower = hl2 - mult*atr
+    atr = pd.Series(tr).ewm(span=period, adjust=False).mean().values
+    hl2 = (h + l) / 2
 
-    stl = np.zeros(len(df))
-    trend = np.ones(len(df))
-    stl[0] = lower[0]
+    upper = hl2 + mult * atr
+    lower = hl2 - mult * atr
 
-    for i in range(1,len(df)):
-        if trend[i-1] == 1:
-            stl[i] = max(lower[i], stl[i-1])
-            trend[i] = 1 if c[i] > stl[i] else -1
+    trend = 1
+    st_line = lower[0]
+
+    for i in range(1, len(c)):
+        if trend == 1:
+            st_line = max(lower[i], st_line)
+            if c[i] < st_line:
+                trend = -1
         else:
-            stl[i] = min(upper[i], stl[i-1])
-            trend[i] = -1 if c[i] < stl[i] else 1
+            st_line = min(upper[i], st_line)
+            if c[i] > st_line:
+                trend = 1
 
-    return trend
+    return trend   # ⬅️ INT ONLY (AMAN)
 
 def volume_osc(v,f,s):
     return (v.ewm(span=f).mean()-v.ewm(span=s).mean())/v.ewm(span=s).mean()*100
@@ -286,7 +263,7 @@ if st.button("🔍 Scan Saham IDX"):
             df1d=fetch_ohlcv(s,DAILY_INTERVAL,LOOKBACK_1D)
 
             trend=supertrend(df1h,ATR_PERIOD,MULTIPLIER)
-            if trend.iloc[-1]!=1:
+            if trend != 1:
                 if DEBUG: st.write(f"{s} ❌ Supertrend bearish")
                 continue
 
@@ -297,19 +274,34 @@ if st.button("🔍 Scan Saham IDX"):
 
             trade=trade_levels(df1d)
             if not trade:
-                if DEBUG: st.write(f"{s} ❌ Risk invalid")
+                if DEBUG: st.write(f"{s} ❌ Risk / support invalid")
                 continue
 
-            found.append({
+            entry, sl = trade
+            sig={
+                "Time":now_wib(),
                 "Symbol":s,
-                "Score":score
-            })
+                "Phase":"AKUMULASI_KUAT",
+                "Score":score,
+                "Rating":"⭐"*score,
+                "Entry":round(entry,2),
+                "SL":round(sl,2),
+                "TP1":round(entry+(entry-sl)*0.8,2),
+                "TP2":round(entry+(entry-sl)*2.0,2),
+                "Label":"NEW"
+            }
+            found.append(sig)
 
         except Exception as e:
             if DEBUG:
                 st.write(f"{s} ❌ Error: {e}")
 
-    st.success(f"🔥 {len(found)} SIGNAL AKUMULASI_KUAT")
+    if found:
+        df=pd.DataFrame(found).sort_values("Score",ascending=False)
+        st.success(f"🔥 {len(df)} SIGNAL AKUMULASI_KUAT")
+        st.dataframe(df,use_container_width=True)
+    else:
+        st.warning("🔥 0 SIGNAL AKUMULASI_KUAT")
 
     if DEBUG:
         st.info(f"""
