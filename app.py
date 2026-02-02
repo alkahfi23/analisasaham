@@ -6,28 +6,25 @@ import time, os
 from datetime import datetime, timezone, timedelta
 
 # =====================================================
-# STREAMLIT CONFIG
+# STREAMLIT
 # =====================================================
-st.set_page_config("IDX PRO Scanner — REFACTORED", layout="wide")
-st.title("📈 IDX PRO Scanner — Yahoo Finance (REFACTORED)")
+st.set_page_config("IDX PRO Scanner — FINAL + REGIME", layout="wide")
+st.title("📈 IDX PRO Scanner — Yahoo Finance (FINAL + Market Regime)")
 
 DEBUG = st.sidebar.toggle("🧪 Debug Mode", value=False)
 
 # =====================================================
-# PATH & FILE
+# FILE & TIME
 # =====================================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SIGNAL_FILE = os.path.join(BASE_DIR, "signal_history.csv")
 
-# =====================================================
-# TIMEZONE
-# =====================================================
 WIB = timezone(timedelta(hours=7))
 def now_wib():
     return datetime.now(WIB).strftime("%Y-%m-%d %H:%M WIB")
 
 # =====================================================
-# CONFIG (IDX REALISTIC)
+# CONFIG
 # =====================================================
 ENTRY_INTERVAL = "1h"
 DAILY_INTERVAL = "1d"
@@ -48,17 +45,20 @@ SR_LOOKBACK = 5
 ZONE_BUFFER = 0.01
 MIN_RISK_PCT = 0.01
 
+ADX_PERIOD = 14
+ADX_TREND_MIN = 20
+
 # =====================================================
 # INIT CSV
 # =====================================================
 if not os.path.exists(SIGNAL_FILE):
     pd.DataFrame(columns=[
-        "Time","Symbol","Phase","Score","Rating",
+        "Time","Symbol","Regime","Phase","Score","Rating",
         "Entry","SL","TP1","TP2","Label"
     ]).to_csv(SIGNAL_FILE, index=False)
 
 # =====================================================
-# SIDEBAR — EXCEL
+# SIDEBAR
 # =====================================================
 st.sidebar.header("📂 Master Saham IDX")
 uploaded_file = st.sidebar.file_uploader(
@@ -67,7 +67,7 @@ uploaded_file = st.sidebar.file_uploader(
 )
 
 # =====================================================
-# LOAD SYMBOLS
+# UTILITIES
 # =====================================================
 @st.cache_data(ttl=3600)
 def load_idx_symbols(file):
@@ -84,41 +84,24 @@ def load_idx_symbols(file):
     )
     return [s + ".JK" for s in symbols if len(s) >= 3]
 
-# =====================================================
-# LIQUIDITY FILTER
-# =====================================================
 @st.cache_data(ttl=1800)
 def filter_by_volume(symbols, min_volume):
-    liquid, debug = [], []
-
+    liquid = []
     for s in symbols:
         try:
             df = yf.download(s, period="10d", interval="1d", progress=False)
-            if df.empty or "Volume" not in df.columns:
-                continue
-
-            avg_vol = df["Volume"].tail(5).mean()
-            if avg_vol >= min_volume:
+            if not df.empty and df["Volume"].tail(5).mean() >= min_volume:
                 liquid.append(s)
-            else:
-                debug.append({"Symbol": s, "AvgVolume": int(avg_vol)})
-
             time.sleep(0.05)
+        except:
+            pass
+    return liquid
 
-        except Exception as e:
-            debug.append({"Symbol": s, "Error": str(e)})
-
-    return liquid, pd.DataFrame(debug)
-
-# =====================================================
-# FETCH OHLCV
-# =====================================================
 @st.cache_data(ttl=300)
 def fetch_ohlcv(symbol, interval, period):
     df = yf.download(symbol, interval=interval, period=period, progress=False)
     if df.empty:
-        raise RuntimeError("No OHLC data")
-
+        raise RuntimeError("No data")
     df.columns = [c[0].lower() if isinstance(c, tuple) else c.lower() for c in df.columns]
     return df[["open","high","low","close","volume"]].astype(float).dropna()
 
@@ -132,10 +115,8 @@ def supertrend(df, period, mult):
         abs(h - c.shift(1)),
         abs(l - c.shift(1))
     ])
-
     atr = tr.ewm(span=period, adjust=False).mean()
     hl2 = (h + l) / 2
-
     upper = hl2 + mult * atr
     lower = hl2 - mult * atr
 
@@ -152,9 +133,9 @@ def supertrend(df, period, mult):
 
     return trend[-1]
 
-def volume_osc(volume, fast, slow):
-    fast_ma = volume.ewm(span=fast).mean()
-    slow_ma = volume.ewm(span=slow).mean().replace(0, np.nan)
+def volume_osc(v, fast, slow):
+    fast_ma = v.ewm(span=fast).mean()
+    slow_ma = v.ewm(span=slow).mean().replace(0, np.nan)
     return ((fast_ma - slow_ma) / slow_ma * 100).fillna(0)
 
 def accumulation_distribution(df):
@@ -174,15 +155,51 @@ def find_support(df, lb):
     return sorted(set(supports))
 
 # =====================================================
-# SCORE SYSTEM
+# ADX & MARKET REGIME
 # =====================================================
-def calculate_score(df1h, df1d):
-    score = 0
+def calculate_adx(df, period=14):
+    high, low, close = df.high, df.low, df.close
 
+    plus_dm = high.diff()
+    minus_dm = low.diff().abs()
+
+    plus_dm = np.where((plus_dm > minus_dm) & (plus_dm > 0), plus_dm, 0)
+    minus_dm = np.where((minus_dm > plus_dm) & (minus_dm > 0), minus_dm, 0)
+
+    tr = np.maximum.reduce([
+        high - low,
+        abs(high - close.shift(1)),
+        abs(low - close.shift(1))
+    ])
+
+    atr = pd.Series(tr).rolling(period).mean()
+    plus_di = 100 * (pd.Series(plus_dm).rolling(period).mean() / atr)
+    minus_di = 100 * (pd.Series(minus_dm).rolling(period).mean() / atr)
+
+    dx = (abs(plus_di - minus_di) / (plus_di + minus_di)) * 100
+    adx = dx.rolling(period).mean()
+    return adx
+
+def market_regime(df1d):
+    ema50 = df1d.close.ewm(span=50).mean()
+    ema200 = df1d.close.ewm(span=200).mean()
+    adx = calculate_adx(df1d, ADX_PERIOD)
+    price = df1d.close.iloc[-1]
+
+    if price > ema200.iloc[-1] and ema50.iloc[-1] > ema200.iloc[-1] and adx.iloc[-1] >= ADX_TREND_MIN:
+        return "TRENDING_BULL"
+    if price < ema200.iloc[-1]:
+        return "DISTRIBUTION"
+    return "RANGING"
+
+# =====================================================
+# SCORE & TRADE
+# =====================================================
+def calculate_score(df1h):
+    score = 0
     ema20 = df1h.close.ewm(span=20).mean()
     ema50 = df1h.close.ewm(span=50).mean()
     ema200 = df1h.close.ewm(span=200).mean()
-
     price = df1h.close.iloc[-1]
 
     if price > ema20.iloc[-1]: score += 1
@@ -202,32 +219,24 @@ def calculate_score(df1h, df1d):
 
     return score
 
-# =====================================================
-# TRADE LEVELS
-# =====================================================
 def trade_levels(df1d):
     entry = float(df1d.close.iloc[-1])
     supports = [s for s in find_support(df1d, SR_LOOKBACK) if s < entry]
-
     if not supports:
         return None
-
     sl = max(supports) * (1 - ZONE_BUFFER)
     if entry - sl < entry * MIN_RISK_PCT:
         return None
-
     return entry, sl
 
 def auto_label(close_price, entry):
     dist = abs(close_price - entry) / entry
-
     if dist <= 0.005:
         return "ENTRY NOW"
     if close_price > entry and dist < 0.02:
         return "BREAKOUT BUY"
     if close_price > entry:
         return "WAIT PULLBACK"
-
     return "NO TRADE"
 
 # =====================================================
@@ -238,7 +247,7 @@ if not uploaded_file:
     st.stop()
 
 ALL_SYMBOLS = load_idx_symbols(uploaded_file)
-IDX_SYMBOLS, _ = filter_by_volume(ALL_SYMBOLS, MIN_AVG_VOLUME)
+IDX_SYMBOLS = filter_by_volume(ALL_SYMBOLS, MIN_AVG_VOLUME)
 
 st.caption(f"📊 Saham likuid: {len(IDX_SYMBOLS)} / {len(ALL_SYMBOLS)}")
 
@@ -253,10 +262,14 @@ if st.button("🔍 Scan Saham IDX"):
             df1h = fetch_ohlcv(s, ENTRY_INTERVAL, LOOKBACK_1H)
             df1d = fetch_ohlcv(s, DAILY_INTERVAL, LOOKBACK_1D)
 
+            regime = market_regime(df1d)
+            if regime != "TRENDING_BULL":
+                continue
+
             if supertrend(df1h, ATR_PERIOD, MULTIPLIER) != 1:
                 continue
 
-            score = calculate_score(df1h, df1d)
+            score = calculate_score(df1h)
             if score < MIN_SCORE:
                 continue
 
@@ -265,11 +278,11 @@ if st.button("🔍 Scan Saham IDX"):
                 continue
 
             entry, sl = trade
-            label = auto_label(df1d.close.iloc[-1], entry)
 
             results.append({
                 "Time": now_wib(),
                 "Symbol": s,
+                "Regime": regime,
                 "Phase": "AKUMULASI_KUAT",
                 "Score": score,
                 "Rating": "⭐" * score,
@@ -277,7 +290,7 @@ if st.button("🔍 Scan Saham IDX"):
                 "SL": round(sl, 2),
                 "TP1": round(entry + (entry - sl) * 0.8, 2),
                 "TP2": round(entry + (entry - sl) * 2.0, 2),
-                "Label": label
+                "Label": auto_label(df1d.close.iloc[-1], entry)
             })
 
         except Exception as e:
@@ -286,7 +299,7 @@ if st.button("🔍 Scan Saham IDX"):
 
     if results:
         df = pd.DataFrame(results).sort_values("Score", ascending=False)
-        st.success(f"🔥 {len(df)} SIGNAL AKUMULASI_KUAT")
+        st.success(f"🔥 {len(df)} SIGNAL TRENDING_BULL")
         st.dataframe(df, use_container_width=True)
     else:
-        st.warning("🔥 0 SIGNAL AKUMULASI_KUAT")
+        st.warning("🔥 0 SIGNAL (Market Tidak Kondusif)")
