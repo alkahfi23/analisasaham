@@ -8,13 +8,13 @@ from datetime import datetime, timezone, timedelta
 # =====================================================
 # STREAMLIT
 # =====================================================
-st.set_page_config("IDX PRO Scanner — FINAL + REGIME", layout="wide")
-st.title("📈 IDX PRO Scanner — Yahoo Finance (FINAL + Market Regime)")
+st.set_page_config("IDX PRO Scanner — SAFE VOLUME", layout="wide")
+st.title("📈 IDX PRO Scanner — Yahoo Finance (SAFE VOLUME IDX)")
 
 DEBUG = st.sidebar.toggle("🧪 Debug Mode", value=False)
 
 # =====================================================
-# FILE & TIME
+# TIME & FILE
 # =====================================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SIGNAL_FILE = os.path.join(BASE_DIR, "signal_history.csv")
@@ -32,7 +32,7 @@ DAILY_INTERVAL = "1d"
 LOOKBACK_1H = "6mo"
 LOOKBACK_1D = "3y"
 
-MIN_AVG_VOLUME = 300_000
+MIN_AVG_VOLUME = 300_000   # soft filter
 MIN_SCORE = 6
 
 ATR_PERIOD = 10
@@ -67,7 +67,7 @@ uploaded_file = st.sidebar.file_uploader(
 )
 
 # =====================================================
-# UTILITIES
+# SYMBOL LOAD
 # =====================================================
 @st.cache_data(ttl=3600)
 def load_idx_symbols(file):
@@ -84,24 +84,50 @@ def load_idx_symbols(file):
     )
     return [s + ".JK" for s in symbols if len(s) >= 3]
 
+# =====================================================
+# SAFE VOLUME FILTER (IDX)
+# =====================================================
 @st.cache_data(ttl=1800)
-def filter_by_volume(symbols, min_volume):
-    liquid = []
+def safe_volume_filter(symbols, min_volume):
+    """
+    RULE:
+    - If volume valid → apply threshold
+    - If volume NaN / 0 / Yahoo error → KEEP symbol
+    """
+    passed = []
+
     for s in symbols:
         try:
             df = yf.download(s, period="10d", interval="1d", progress=False)
-            if not df.empty and df["Volume"].tail(5).mean() >= min_volume:
-                liquid.append(s)
-            time.sleep(0.05)
-        except:
-            pass
-    return liquid
 
+            if df.empty or "Volume" not in df.columns:
+                passed.append(s)
+                continue
+
+            avg_vol = df["Volume"].tail(5).mean()
+
+            # 🔥 SAFE LOGIC
+            if pd.isna(avg_vol) or avg_vol <= 0:
+                passed.append(s)
+            elif avg_vol >= min_volume:
+                passed.append(s)
+
+            time.sleep(0.05)
+
+        except:
+            passed.append(s)
+
+    return passed
+
+# =====================================================
+# FETCH OHLCV
+# =====================================================
 @st.cache_data(ttl=300)
 def fetch_ohlcv(symbol, interval, period):
     df = yf.download(symbol, interval=interval, period=period, progress=False)
     if df.empty:
         raise RuntimeError("No data")
+
     df.columns = [c[0].lower() if isinstance(c, tuple) else c.lower() for c in df.columns]
     return df[["open","high","low","close","volume"]].astype(float).dropna()
 
@@ -159,7 +185,6 @@ def find_support(df, lb):
 # =====================================================
 def calculate_adx(df, period=14):
     high, low, close = df.high, df.low, df.close
-
     plus_dm = high.diff()
     minus_dm = low.diff().abs()
 
@@ -177,8 +202,7 @@ def calculate_adx(df, period=14):
     minus_di = 100 * (pd.Series(minus_dm).rolling(period).mean() / atr)
 
     dx = (abs(plus_di - minus_di) / (plus_di + minus_di)) * 100
-    adx = dx.rolling(period).mean()
-    return adx
+    return dx.rolling(period).mean()
 
 def market_regime(df1d):
     ema50 = df1d.close.ewm(span=50).mean()
@@ -247,9 +271,9 @@ if not uploaded_file:
     st.stop()
 
 ALL_SYMBOLS = load_idx_symbols(uploaded_file)
-IDX_SYMBOLS = filter_by_volume(ALL_SYMBOLS, MIN_AVG_VOLUME)
+IDX_SYMBOLS = safe_volume_filter(ALL_SYMBOLS, MIN_AVG_VOLUME)
 
-st.caption(f"📊 Saham likuid: {len(IDX_SYMBOLS)} / {len(ALL_SYMBOLS)}")
+st.caption(f"📊 Saham lolos safe liquidity: {len(IDX_SYMBOLS)} / {len(ALL_SYMBOLS)}")
 
 # =====================================================
 # SCANNER
@@ -262,8 +286,7 @@ if st.button("🔍 Scan Saham IDX"):
             df1h = fetch_ohlcv(s, ENTRY_INTERVAL, LOOKBACK_1H)
             df1d = fetch_ohlcv(s, DAILY_INTERVAL, LOOKBACK_1D)
 
-            regime = market_regime(df1d)
-            if regime != "TRENDING_BULL":
+            if market_regime(df1d) != "TRENDING_BULL":
                 continue
 
             if supertrend(df1h, ATR_PERIOD, MULTIPLIER) != 1:
@@ -282,7 +305,7 @@ if st.button("🔍 Scan Saham IDX"):
             results.append({
                 "Time": now_wib(),
                 "Symbol": s,
-                "Regime": regime,
+                "Regime": "TRENDING_BULL",
                 "Phase": "AKUMULASI_KUAT",
                 "Score": score,
                 "Rating": "⭐" * score,
