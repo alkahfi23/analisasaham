@@ -152,9 +152,14 @@ def supertrend(df, period, mult):
     return trend[-1]
 
 def volume_osc(v, fast, slow):
-    fast_ma = v.ewm(span=fast).mean()
-    slow_ma = v.ewm(span=slow).mean().replace(0, np.nan)
+    # 🔒 FORCE pandas Series (INI KUNCINYA)
+    v = pd.Series(v).copy()
+
+    fast_ma = v.ewm(span=fast, adjust=False).mean()
+    slow_ma = v.ewm(span=slow, adjust=False).mean().replace(0, np.nan)
+
     return ((fast_ma - slow_ma) / slow_ma * 100).fillna(0)
+
 
 def accumulation_distribution(df):
     h,l,c,v = df.high, df.low, df.close, df.volume
