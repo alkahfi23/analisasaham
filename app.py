@@ -8,8 +8,8 @@ from datetime import datetime, timezone, timedelta
 # =====================================================
 # STREAMLIT
 # =====================================================
-st.set_page_config("IDX PRO Scanner — SAFE VOLUME", layout="wide")
-st.title("📈 IDX PRO Scanner — Yahoo Finance (SAFE VOLUME IDX)")
+st.set_page_config("IDX PRO Scanner — FINAL SMART REGIME", layout="wide")
+st.title("📈 IDX PRO Scanner — Yahoo Finance (SAFE VOLUME + SMART REGIME)")
 
 DEBUG = st.sidebar.toggle("🧪 Debug Mode", value=False)
 
@@ -32,8 +32,8 @@ DAILY_INTERVAL = "1d"
 LOOKBACK_1H = "6mo"
 LOOKBACK_1D = "3y"
 
-MIN_AVG_VOLUME = 300_000   # soft filter
-MIN_SCORE = 6
+MIN_AVG_VOLUME = 300_000
+BASE_MIN_SCORE = 6
 
 ATR_PERIOD = 10
 MULTIPLIER = 3.0
@@ -89,13 +89,7 @@ def load_idx_symbols(file):
 # =====================================================
 @st.cache_data(ttl=1800)
 def safe_volume_filter(symbols, min_volume):
-    """
-    RULE:
-    - If volume valid → apply threshold
-    - If volume NaN / 0 / Yahoo error → KEEP symbol
-    """
     passed = []
-
     for s in symbols:
         try:
             df = yf.download(s, period="10d", interval="1d", progress=False)
@@ -106,14 +100,12 @@ def safe_volume_filter(symbols, min_volume):
 
             avg_vol = df["Volume"].tail(5).mean()
 
-            # 🔥 SAFE LOGIC
             if pd.isna(avg_vol) or avg_vol <= 0:
                 passed.append(s)
             elif avg_vol >= min_volume:
                 passed.append(s)
 
             time.sleep(0.05)
-
         except:
             passed.append(s)
 
@@ -286,14 +278,16 @@ if st.button("🔍 Scan Saham IDX"):
             df1h = fetch_ohlcv(s, ENTRY_INTERVAL, LOOKBACK_1H)
             df1d = fetch_ohlcv(s, DAILY_INTERVAL, LOOKBACK_1D)
 
-            if market_regime(df1d) != "TRENDING_BULL":
+            regime = market_regime(df1d)
+            if regime == "DISTRIBUTION":
                 continue
 
             if supertrend(df1h, ATR_PERIOD, MULTIPLIER) != 1:
                 continue
 
             score = calculate_score(df1h)
-            if score < MIN_SCORE:
+            min_score = BASE_MIN_SCORE if regime == "TRENDING_BULL" else BASE_MIN_SCORE + 1
+            if score < min_score:
                 continue
 
             trade = trade_levels(df1d)
@@ -305,7 +299,7 @@ if st.button("🔍 Scan Saham IDX"):
             results.append({
                 "Time": now_wib(),
                 "Symbol": s,
-                "Regime": "TRENDING_BULL",
+                "Regime": regime,
                 "Phase": "AKUMULASI_KUAT",
                 "Score": score,
                 "Rating": "⭐" * score,
@@ -322,7 +316,7 @@ if st.button("🔍 Scan Saham IDX"):
 
     if results:
         df = pd.DataFrame(results).sort_values("Score", ascending=False)
-        st.success(f"🔥 {len(df)} SIGNAL TRENDING_BULL")
+        st.success(f"🔥 {len(df)} SIGNAL (SMART REGIME)")
         st.dataframe(df, use_container_width=True)
     else:
-        st.warning("🔥 0 SIGNAL (Market Tidak Kondusif)")
+        st.warning("🔥 0 SIGNAL (Market Sideways / Transisi)")
