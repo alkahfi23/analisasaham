@@ -8,8 +8,8 @@ from datetime import datetime, timezone, timedelta
 # =====================================================
 # STREAMLIT
 # =====================================================
-st.set_page_config("IDX PRO Scanner — FINAL SMART REGIME", layout="wide")
-st.title("📈 IDX PRO Scanner — Yahoo Finance (SAFE VOLUME + SMART REGIME)")
+st.set_page_config("IDX PRO Scanner — FULL CLEAN", layout="wide")
+st.title("📈 IDX PRO Scanner — Yahoo Finance (FULL CLEAN VERSION)")
 
 DEBUG = st.sidebar.toggle("🧪 Debug Mode", value=False)
 
@@ -74,8 +74,7 @@ def load_idx_symbols(file):
     df = pd.read_excel(file)
     col = df.columns[0]
     symbols = (
-        df[col]
-        .astype(str)
+        df[col].astype(str)
         .str.upper()
         .str.strip()
         .str.replace(r"[^A-Z0-9]", "", regex=True)
@@ -85,7 +84,7 @@ def load_idx_symbols(file):
     return [s + ".JK" for s in symbols if len(s) >= 3]
 
 # =====================================================
-# SAFE VOLUME FILTER (IDX)
+# SAFE VOLUME FILTER
 # =====================================================
 @st.cache_data(ttl=1800)
 def safe_volume_filter(symbols, min_volume):
@@ -93,22 +92,17 @@ def safe_volume_filter(symbols, min_volume):
     for s in symbols:
         try:
             df = yf.download(s, period="10d", interval="1d", progress=False)
-
             if df.empty or "Volume" not in df.columns:
                 passed.append(s)
                 continue
 
-            avg_vol = df["Volume"].tail(5).mean()
-
-            if pd.isna(avg_vol) or avg_vol <= 0:
-                passed.append(s)
-            elif avg_vol >= min_volume:
+            vol = pd.Series(df["Volume"]).tail(5).mean()
+            if pd.isna(vol) or vol <= 0 or vol >= min_volume:
                 passed.append(s)
 
             time.sleep(0.05)
         except:
             passed.append(s)
-
     return passed
 
 # =====================================================
@@ -121,55 +115,59 @@ def fetch_ohlcv(symbol, interval, period):
         raise RuntimeError("No data")
 
     df.columns = [c[0].lower() if isinstance(c, tuple) else c.lower() for c in df.columns]
-    return df[["open","high","low","close","volume"]].astype(float).dropna()
+    df = df[["open","high","low","close","volume"]].astype(float).dropna()
+    return df.copy()
 
 # =====================================================
-# INDICATORS
+# INDICATORS (CLEAN)
 # =====================================================
 def supertrend(df, period, mult):
+    df = df.copy()
     h, l, c = df.high, df.low, df.close
-    tr = np.maximum.reduce([
+
+    tr = pd.concat([
         h - l,
-        abs(h - c.shift(1)),
-        abs(l - c.shift(1))
-    ])
+        (h - c.shift()).abs(),
+        (l - c.shift()).abs()
+    ], axis=1).max(axis=1)
+
     atr = tr.ewm(span=period, adjust=False).mean()
     hl2 = (h + l) / 2
+
     upper = hl2 + mult * atr
     lower = hl2 - mult * atr
 
-    trend = [1]
-    st_line = [lower.iloc[0]]
+    trend = 1
+    st_line = lower.iloc[0]
 
     for i in range(1, len(c)):
-        if trend[-1] == 1:
-            st_line.append(max(lower.iloc[i], st_line[-1]))
-            trend.append(-1 if c.iloc[i] < st_line[-1] else 1)
+        if trend == 1:
+            st_line = max(lower.iloc[i], st_line)
+            if c.iloc[i] < st_line:
+                trend = -1
         else:
-            st_line.append(min(upper.iloc[i], st_line[-1]))
-            trend.append(1 if c.iloc[i] > st_line[-1] else -1)
+            st_line = min(upper.iloc[i], st_line)
+            if c.iloc[i] > st_line:
+                trend = 1
 
-    return trend[-1]
+    return trend
 
 def volume_osc(v, fast, slow):
-    # 🔒 FORCE pandas Series (INI KUNCINYA)
     v = pd.Series(v).copy()
-
     fast_ma = v.ewm(span=fast, adjust=False).mean()
     slow_ma = v.ewm(span=slow, adjust=False).mean().replace(0, np.nan)
-
     return ((fast_ma - slow_ma) / slow_ma * 100).fillna(0)
 
-
 def accumulation_distribution(df):
-    h,l,c,v = df.high, df.low, df.close, df.volume
+    df = df.copy()
+    h, l, c, v = df.high, df.low, df.close, df.volume
     denom = (h - l).replace(0, np.nan)
     mfm = ((c - l) - (h - c)) / denom
-    mfm = mfm.replace([np.inf, -np.inf], 0).fillna(0)
+    mfm = mfm.fillna(0)
     return (mfm * v).cumsum()
 
 def find_support(df, lb):
-    lows = df.low.values
+    lows = pd.Series(df.low).values
     supports = []
     for i in range(lb, len(lows)-lb):
         zone = lows[i-lb:i+lb+1]
@@ -178,12 +176,11 @@ def find_support(df, lb):
     return sorted(set(supports))
 
 # =====================================================
-# ADX & MARKET REGIME
+# ADX & MARKET REGIME (CLEAN)
 # =====================================================
 def calculate_adx(df, period=14):
-    high = df.high.copy()
-    low = df.low.copy()
-    close = df.close.copy()
+    df = df.copy()
+    high, low, close = df.high, df.low, df.close
 
     plus_dm = high.diff()
     minus_dm = low.diff().abs()
@@ -198,18 +195,16 @@ def calculate_adx(df, period=14):
     ], axis=1).max(axis=1)
 
     atr = tr.rolling(period).mean()
-
     plus_di = 100 * (plus_dm.rolling(period).mean() / atr)
     minus_di = 100 * (minus_dm.rolling(period).mean() / atr)
 
     dx = (abs(plus_di - minus_di) / (plus_di + minus_di)) * 100
-    adx = dx.rolling(period).mean()
-
-    return adx
+    return dx.rolling(period).mean()
 
 def market_regime(df1d):
-    ema50 = df1d.close.ewm(span=50).mean()
-    ema200 = df1d.close.ewm(span=200).mean()
+    df1d = df1d.copy()
+    ema50 = df1d.close.ewm(span=50, adjust=False).mean()
+    ema200 = df1d.close.ewm(span=200, adjust=False).mean()
     adx = calculate_adx(df1d, ADX_PERIOD)
     price = df1d.close.iloc[-1]
 
@@ -223,10 +218,12 @@ def market_regime(df1d):
 # SCORE & TRADE
 # =====================================================
 def calculate_score(df1h):
+    df1h = df1h.copy()
     score = 0
-    ema20 = df1h.close.ewm(span=20).mean()
-    ema50 = df1h.close.ewm(span=50).mean()
-    ema200 = df1h.close.ewm(span=200).mean()
+
+    ema20 = df1h.close.ewm(span=20, adjust=False).mean()
+    ema50 = df1h.close.ewm(span=50, adjust=False).mean()
+    ema200 = df1h.close.ewm(span=200, adjust=False).mean()
     price = df1h.close.iloc[-1]
 
     if price > ema20.iloc[-1]: score += 1
@@ -327,7 +324,7 @@ if st.button("🔍 Scan Saham IDX"):
 
     if results:
         df = pd.DataFrame(results).sort_values("Score", ascending=False)
-        st.success(f"🔥 {len(df)} SIGNAL (SMART REGIME)")
+        st.success(f"🔥 {len(df)} SIGNAL (FULL CLEAN)")
         st.dataframe(df, use_container_width=True)
     else:
         st.warning("🔥 0 SIGNAL (Market Sideways / Transisi)")
